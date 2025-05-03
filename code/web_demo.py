@@ -1,14 +1,14 @@
 import gradio as gr
 import mdtex2html
 from model.openllama import OpenLLAMAPEFTModel
-# import torch
+import torch
 from io import BytesIO
 from PIL import Image as PILImage
 import cv2
 import numpy as np
 from matplotlib import pyplot as plt
-
-# from torchvision import transforms
+from torchvision import transforms
+import time
 
 # init the model
 args = {
@@ -24,13 +24,12 @@ args = {
     'lora_dropout': 0.1
 }
 
-# model = OpenLLAMAPEFTModel(**args)
-# delta_ckpt = torch.load(args['delta_ckpt_path'], map_location=torch.device('cpu'))
-# model.load_state_dict(delta_ckpt, strict=False)
-# delta_ckpt = torch.load(args['anomalygpt_ckpt_path'], map_location=torch.device('cpu'))
-# model.load_state_dict(delta_ckpt, strict=False)
-# model = model.eval().half().cuda()
-
+model = OpenLLAMAPEFTModel(**args)
+delta_ckpt = torch.load(args['delta_ckpt_path'], map_location=torch.device('cpu'))
+model.load_state_dict(delta_ckpt, strict=False)
+delta_ckpt = torch.load(args['anomalygpt_ckpt_path'], map_location=torch.device('cpu'))
+model.load_state_dict(delta_ckpt, strict=False)
+model = model.eval().half().cuda()
 
 """Override Chatbot.postprocess"""
 
@@ -89,77 +88,86 @@ def predict(
         chatbot,
         max_length,
         top_p,
+        temperature,
         history,
         modality_cache,
 ):
-    if image_path is None and normal_img_path is None:
-        return [(input, "There is no input data provided! Please upload your data and start the conversation.")]
-    else:
-        print(f'[!] image path: {image_path}\n[!] normal image path: {normal_img_path}\n')
-
-    # prepare the prompt
-    prompt_text = ''
-    for idx, (q, a) in enumerate(history):
-        if idx == 0:
-            prompt_text += f'{q}\n### Assistant: {a}\n###'
+    try:
+        if image_path is None and normal_img_path is None:
+            return [(input, "There is no input data provided! Please upload your data and start the conversation.")]
         else:
-            prompt_text += f' Human: {q}\n### Assistant: {a}\n###'
-    if len(history) == 0:
-        prompt_text += f'{input}'
-    else:
-        prompt_text += f' Human: {input}'
+            print(f'[!] image path: {image_path}\n[!] normal image path: {normal_img_path}\n')
 
-    # response, pixel_output = model.generate({
-    #     'prompt': prompt_text,
-    #     'image_paths': [image_path] if image_path else [],
-    #     'normal_img_paths': [normal_img_path] if normal_img_path else [],
-    #     'audio_paths': [],
-    #     'video_paths': [],
-    #     'thermal_paths': [],
-    #     'top_p': top_p,
-    #     'max_tgt_len': max_length,
-    #     'modality_embeds': modality_cache
-    # },web_demo=True)
-    response = (f"The image features a young woman holding a cat in her arms. "
-                f"The woman is smiling and posing for the camera, while the cat "
-                f"is sitting comfortably in her arms. The woman is wearing glasses, "
-                f"and the cat is wearing a collar. The scene is set against a pink background, "
-                f"creating a warm and cozy atmosphere.")
-    chatbot.append((parse_text(input), parse_text(response)))
-    history.append((input, response))
+        # prepare the prompt
+        prompt_text = ''
+        for idx, (q, a) in enumerate(history):
+            if idx == 0:
+                prompt_text += f'{q}\n### Assistant: {a}\n###'
+            else:
+                prompt_text += f' Human: {q}\n### Assistant: {a}\n###'
+        if len(history) == 0:
+            prompt_text += f'{input}'
+        else:
+            prompt_text += f' Human: {input}'
 
-    # plt.imshow(pixel_output.to(torch.float16).reshape(224,224).detach().cpu(), cmap='binary_r')
-    # plt.axis('off')
-    # plt.savefig('output.png',bbox_inches='tight',pad_inches = 0)
+        # time.sleep(20)
+        print(f'[!] prompt: {prompt_text}')
+        response, pixel_output = model.generate({
+            'prompt': prompt_text,
+            'image_paths': [image_path] if image_path else [],
+            'normal_img_paths': [normal_img_path] if normal_img_path else [],
+            'audio_paths': [],
+            'video_paths': [],
+            'thermal_paths': [],
+            'top_p': top_p,
+            'temperature': temperature,
+            'max_tgt_len': max_length,
+            'modality_embeds': modality_cache
+        }, web_demo=True)
 
-    target_size = 224
-    original_width, original_height = PILImage.open(image_path).size
-    if original_width > original_height:
-        new_width = target_size
-        new_height = int(target_size * (original_height / original_width))
-    else:
-        new_height = target_size
-        new_width = int(target_size * (original_width / original_height))
+        # response = 'The person in the image is wearing a backpack.'
 
-    new_image = PILImage.new('L', (target_size, target_size), 255)  # 'L' mode for grayscale
+        print(f'[!] response: {response}')
+        chatbot.append((parse_text(input), parse_text(response)))
+        history.append((input, response))
 
-    paste_x = (target_size - new_width) // 2
-    paste_y = (target_size - new_height) // 2
+        plt.imshow(pixel_output.to(torch.float16).reshape(224, 224).detach().cpu(), cmap='binary_r')
+        plt.axis('off')
+        plt.savefig('output.png', bbox_inches='tight', pad_inches=0)
 
-    pixel_output = PILImage.open('output.png').resize((new_width, new_height), PILImage.LANCZOS)
+        target_size = 224
+        original_width, original_height = PILImage.open(image_path).size
+        if original_width > original_height:
+            new_width = target_size
+            new_height = int(target_size * (original_height / original_width))
+        else:
+            new_height = target_size
+            new_width = int(target_size * (original_width / original_height))
 
-    new_image.paste(pixel_output, (paste_x, paste_y))
+        new_image = PILImage.new('L', (target_size, target_size), 255)  # 'L' mode for grayscale
 
-    new_image.save('output.png')
+        paste_x = (target_size - new_width) // 2
+        paste_y = (target_size - new_height) // 2
 
-    image = cv2.imread('output.png', cv2.IMREAD_GRAYSCALE)
-    kernel = np.ones((3, 3), np.uint8)
-    eroded_image = cv2.erode(image, kernel, iterations=1)
-    cv2.imwrite('output.png', eroded_image)
+        pixel_output = PILImage.open('output.png').resize((new_width, new_height), PILImage.LANCZOS)
 
-    output = PILImage.open('output.png').convert('L')
+        new_image.paste(pixel_output, (paste_x, paste_y))
 
-    return chatbot, history, modality_cache, output
+        new_image.save('output.png')
+
+        image = cv2.imread('output.png', cv2.IMREAD_GRAYSCALE)
+        kernel = np.ones((3, 3), np.uint8)
+        eroded_image = cv2.erode(image, kernel, iterations=1)
+        cv2.imwrite('output.png', eroded_image)
+
+        output = PILImage.open('output.png').convert('L')
+
+        print(f'[!] history: {history}')
+        return chatbot, history, modality_cache, output
+
+    except Exception as e:
+        print(e)
+        return chatbot, history, modality_cache, PILImage.open('ffffff.png')
 
 
 def reset_user_input():
@@ -248,4 +256,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         image_output
     ], show_progress=True)
 
-demo.queue().launch()
+demo.queue().launch(
+    server_name='0.0.0.0',
+    server_port=7860
+)
